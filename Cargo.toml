@@ -1,0 +1,11 @@
+[package]
+name = "sheaf-agents"
+version = "0.1.0"
+edition = "2021"
+description = "Cellular sheaves on graphs for multi-agent consensus — H¹ > 0 means communication can't help"
+license = "MIT"
+
+[dependencies]
+nalgebra = "0.33"
+
+[dev-dependencies]
