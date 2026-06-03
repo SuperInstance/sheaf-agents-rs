@@ -48,6 +48,60 @@ impl CellularSheaf {
         }
     }
 
+    /// Dimension of H⁰ (global sections).
+    pub fn h0(&self, tol: f64) -> usize {
+        self.cohomology(tol).h0_dim
+    }
+
+    /// Dimension of H¹ (obstructions to agreement).
+    pub fn h1(&self, tol: f64) -> usize {
+        self.cohomology(tol).h1_dim
+    }
+
+    /// Alias for [`CellularSheaf::laplacian`]; returns the sheaf Laplacian.
+    pub fn sheaf_laplacian(&self) -> DMatrix<f64> {
+        self.laplacian()
+    }
+
+    /// Compute the spectral gap (λ₂ - λ₁) of the sheaf Laplacian,
+    /// where λ₁ ≤ λ₂ ≤ … are the eigenvalues of L.
+    ///
+    /// The spectral gap measures how quickly the disagreement diffusion
+    /// converges. A larger gap means faster consensus.
+    pub fn spectral_gap(&self) -> f64 {
+        let l = self.laplacian();
+        if l.nrows() < 2 {
+            return 0.0;
+        }
+        let eigen = l.symmetric_eigenvalues();
+        let mut vals: Vec<f64> = eigen.iter().cloned().collect();
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // Find the first eigenvalue that is numerically > 0
+        vals.into_iter().find(|&v| v > 1e-12).unwrap_or(0.0)
+    }
+
+    /// Return a basis for Hᵈ as a `Vec<Vec<f64>>`.
+    ///
+    /// Each inner Vec is one basis vector (flattened vertex stalk or edge cochain).
+    /// Returns an empty Vec if the cohomology is zero in that dimension
+    /// or if `dim` is not 0 or 1.
+    pub fn cohomology_basis(&self, dim: usize, tol: f64) -> Vec<Vec<f64>> {
+        let coh = self.cohomology(tol);
+        let (nrows, ncols, mat) = match dim {
+            0 => (coh.h0_basis.nrows(), coh.h0_basis.ncols(), &coh.h0_basis),
+            1 => (coh.h1_basis.nrows(), coh.h1_basis.ncols(), &coh.h1_basis),
+            _ => return vec![],
+        };
+        if ncols == 0 {
+            return vec![];
+        }
+        (0..ncols)
+            .map(|col| {
+                (0..nrows).map(|row| mat[(row, col)]).collect()
+            })
+            .collect()
+    }
+
     /// Add an edge with restriction maps `r1` (from `v1`) and `r2` (from `v2`).
     pub fn add_edge(
         &mut self,
@@ -1108,5 +1162,163 @@ mod tests {
         s.add_edge(0, 1, DMatrix::zeros(2, 2), DMatrix::zeros(2, 3));
         assert_eq!(s.total_vertex_dim(), 6);
         assert_eq!(s.total_edge_dim(), 2);
+    }
+
+    // ── Convenience methods (h0, h1, spectral_gap, cohomology_basis) ──
+
+    #[test]
+    fn test_h0_h1_convenience() {
+        let mut s = CellularSheaf::new(vec![2, 2, 2]);
+        s.add_edge(0, 1, id2(), id2());
+        s.add_edge(1, 2, id2(), id2());
+        s.add_edge(0, 2, id2(), id2());
+
+        assert_eq!(s.h0(TOL), 2, "h0() convenience: identity triangle H0=2");
+        assert_eq!(s.h1(TOL), 2, "h1() convenience: identity triangle H1=2");
+    }
+
+    #[test]
+    fn test_h0_h1_orthogonal() {
+        let mut s = CellularSheaf::new(vec![2, 2, 2]);
+        s.add_edge(0, 1, id2(), rot90());
+        s.add_edge(1, 2, id2(), rot90());
+        s.add_edge(0, 2, id2(), id2());
+
+        assert_eq!(s.h0(1e-6), 0, "h0() orthogonal: H0=0");
+        assert_eq!(s.h1(1e-6), 0, "h1() orthogonal: H1=0");
+    }
+
+    #[test]
+    fn test_spectral_gap_identity_edge() {
+        let mut s = CellularSheaf::new(vec![2, 2]);
+        s.add_edge(0, 1, id2(), id2());
+
+        let gap = s.spectral_gap();
+        // 4x4 Laplacian: eigenvalues are 0 (×2) and 2 (×2) → gap = 2
+        assert!(
+            (gap - 2.0).abs() < 1e-10,
+            "spectral gap for identity edge should be 2, got {}",
+            gap
+        );
+    }
+
+    #[test]
+    fn test_spectral_gap_small_sheaf_zero() {
+        // Single vertex: 1x1 Laplacian is 0 → gap = 0
+        let s = CellularSheaf::new(vec![1]);
+        assert!(
+            s.spectral_gap().abs() < 1e-10,
+            "spectral gap for single vertex should be 0"
+        );
+    }
+
+    #[test]
+    fn test_spectral_gap_identity_triangle() {
+        let mut s = CellularSheaf::new(vec![2, 2, 2]);
+        s.add_edge(0, 1, id2(), id2());
+        s.add_edge(1, 2, id2(), id2());
+        s.add_edge(0, 2, id2(), id2());
+
+        let gap = s.spectral_gap();
+        assert!(gap >= 0.0, "spectral gap should be non-negative, got {}", gap);
+        assert!(gap > 0.0, "spectral gap should be > 0 for triangle, got {}", gap);
+    }
+
+    #[test]
+    fn test_cohomology_basis_h0_single_edge() {
+        let mut s = CellularSheaf::new(vec![2, 2]);
+        s.add_edge(0, 1, id2(), id2());
+
+        let basis = s.cohomology_basis(0, TOL);
+        assert_eq!(basis.len(), 2, "H0 basis should have 2 vectors");
+        assert_eq!(basis[0].len(), 4, "each basis vector should have dim=4");
+    }
+
+    #[test]
+    fn test_cohomology_basis_h1_identity_triangle() {
+        let mut s = CellularSheaf::new(vec![2, 2, 2]);
+        s.add_edge(0, 1, id2(), id2());
+        s.add_edge(1, 2, id2(), id2());
+        s.add_edge(0, 2, id2(), id2());
+
+        let basis = s.cohomology_basis(1, TOL);
+        assert_eq!(basis.len(), 2, "H1 basis should have 2 vectors");
+        assert_eq!(basis[0].len(), 6, "each H1 vector should have edge_dim=6");
+    }
+
+    #[test]
+    fn test_cohomology_basis_invalid_dim() {
+        let s = CellularSheaf::new(vec![2, 2]);
+        assert!(s.cohomology_basis(2, TOL).is_empty(), "dim=2 should return empty");
+        assert!(s.cohomology_basis(3, TOL).is_empty(), "dim=3 should return empty");
+    }
+
+    #[test]
+    fn test_disagreement_restriction_mismatch() {
+        let mut s = CellularSheaf::new(vec![2, 2]);
+        s.add_edge(0, 1, id2(), rot90());
+
+        let mut net = AgentNetwork::new(&s);
+        let b = DVector::from_vec(vec![1.0, 0.0]);
+        net.set_belief(0, b.clone());
+        net.set_belief(1, b);
+        let dis = net.disagreement();
+        assert!(
+            dis > 0.0,
+            "disagreement > 0 when restrictions differ with same beliefs, got {}",
+            dis
+        );
+    }
+
+    #[test]
+    fn test_converge_can_reach_zero_with_harmonic_beliefs() {
+        // Identity triangle has H^1=2, but if beliefs are already a global section
+        // (all agents have the same belief), disagreement is 0 even with H^1 > 0.
+        let mut s = CellularSheaf::new(vec![2, 2, 2]);
+        s.add_edge(0, 1, id2(), id2());
+        s.add_edge(1, 2, id2(), id2());
+        s.add_edge(0, 2, id2(), id2());
+
+        let coh = s.cohomology(TOL);
+        assert_eq!(coh.h1_dim, 2, "identity triangle has H1=2");
+        assert!(!can_agree(&s, TOL), "identity triangle: can_agree = false");
+
+        let mut net = AgentNetwork::new(&s);
+        let b = DVector::from_vec(vec![3.0, 7.0]);
+        net.set_belief(0, b.clone());
+        net.set_belief(1, b.clone());
+        net.set_belief(2, b);
+
+        let cr = net.converge(0.1, 100, 1e-10);
+        // Even though H^1 > 0, starting from a global section means zero disagreement
+        assert!(cr.converged, "should converge from global section");
+        assert!(cr.final_disagreement.abs() < 1e-8, "disagreement near zero");
+    }
+
+    #[test]
+    fn test_quality_disagreement_score_mid() {
+        let mut s = CellularSheaf::new(vec![2, 2]);
+        s.add_edge(0, 1, id2(), id2());
+
+        let mut net = AgentNetwork::new(&s);
+        net.set_belief(0, DVector::from_vec(vec![1.0, 0.0]));
+        net.set_belief(1, DVector::from_vec(vec![0.0, 1.0]));
+
+        let q = net.quality(TOL);
+        assert!(
+            q.agreement_score < 1.0 && q.agreement_score > 0.0,
+            "agreement between 0 and 1 when beliefs differ, got {}",
+            q.agreement_score
+        );
+    }
+
+    #[test]
+    fn test_sheaf_laplacian_alias() {
+        let mut s = CellularSheaf::new(vec![2, 2]);
+        s.add_edge(0, 1, id2(), id2());
+
+        let l1 = s.laplacian();
+        let l2 = s.sheaf_laplacian();
+        assert_eq!(l1, l2, "sheaf_laplacian() should match laplacian()");
     }
 }
